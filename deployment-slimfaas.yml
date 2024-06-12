@@ -1,0 +1,174 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: slimfaas-demo
+  labels:
+    name: slimfaas
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: slimfaas
+  namespace: slimfaas-demo
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: namespace-lister
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "pods"]
+    verbs: ["list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: slimfaas-namespace-lister
+subjects:
+  - kind: ServiceAccount
+    name: slimfaas
+    namespace: slimfaas-demo
+roleRef:
+  kind: ClusterRole
+  name: namespace-lister
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: deployment-statefulset-manager
+  namespace: slimfaas-demo
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["apps"]
+    resources: ["deployments/scale", "statefulsets/scale"]
+    verbs: ["get", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: slimfaas-deployment-statefulset-manager
+  namespace: slimfaas-demo
+subjects:
+  - kind: ServiceAccount
+    name: slimfaas
+    namespace: slimfaas-demo
+roleRef:
+  kind: Role
+  name: deployment-statefulset-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: slimfaas
+  namespace: slimfaas-demo
+spec:
+  replicas: 1
+  podManagementPolicy: Parallel
+  serviceName: slimfaas
+  selector:
+    matchLabels:
+      app: slimfaas
+  template:
+    metadata:
+      labels:
+        app: slimfaas
+    spec:
+      volumes:
+        - name: slimfaas-volume
+          emptyDir:
+            sizeLimit: 10Mi
+      serviceAccountName: slimfaas
+      containers:
+        - name: slimfaas
+          image: axaguildev/slimfaas:latest
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 5000
+            initialDelaySeconds: 3
+            periodSeconds: 10
+            timeoutSeconds: 8
+            terminationGracePeriodSeconds: 30
+          env:
+            - name: BASE_FUNCTION_URL
+              value: "http://{function_name}.{namespace}.svc.cluster.local:5000"
+            - name: BASE_SLIMDATA_URL
+              value: "http://{pod_ip}:3262/"
+            - name: NAMESPACE
+              value: "slimfaas-demo"
+            - name: SLIMFAAS_PORTS
+              value: "5000"
+            - name: SLIMDATA_DIRECTORY
+              value: "/database"
+            - name: SLIMDATA_CONFIGURATION
+              value: |
+                {"coldStart":"true"}
+            - name: DOTNET_GCHeapHardLimit
+              value: "03200000"
+            - name: DOTNET_gcServer
+              value: "1"
+          volumeMounts:
+            - name: slimfaas-volume
+              mountPath: /database
+          resources:
+            limits:
+              memory: "60Mi"
+              cpu: "400m"
+            requests:
+              memory: "60Mi"
+              cpu: "200m"
+          ports:
+            - containerPort: 5000
+              name: slimfaas
+            - containerPort: 3262
+              name: slimdata
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: slimfaas
+  namespace: slimfaas-demo
+spec:
+  selector:
+    app: slimfaas
+  ports:
+    - name: "http"
+      port: 5000
+    - name: "slimdata"
+      port: 3262
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: slimfaas
+  namespace: slimfaas-demo
+  annotations:
+    cert-manager.io/cluster-issuer: lets-encrypt
+    # for the NGINX's nginx-ingress 
+    nginx.org/proxy-connect-timeout: 1200s
+    nginx.org/proxy-read-timeout: 1200s
+    nginx.org/proxy-send-timeout: 1200s
+    # for the default ingress-nginx
+    nginx.ingress.kubernetes.io/proxy-connect-timeout: "1200"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "1200"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "1200"
+spec:
+  tls:
+  - hosts:
+    - <dns-entry>
+    secretName: slimfaas-tls
+  rules:
+  - host: <dns-entry>
+    http:
+      paths:
+      - path: /
+        pathType: Prefix
+        backend:
+          service:
+            name: slimfaas
+            port:
+              number: 5000

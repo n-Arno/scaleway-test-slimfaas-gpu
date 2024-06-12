@@ -1,0 +1,86 @@
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  labels:
+    app: ollama
+  name: ollama
+  namespace: slimfaas-demo
+spec:
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app: ollama
+  template:
+    metadata:
+      labels:
+        app: ollama
+      annotations:
+        SlimFaas/Function: "true"
+        SlimFaas/ReplicasMin: "0"
+        SlimFaas/ReplicasAtStart: "1"
+        SlimFaas/ReplicasStartAsSoonAsOneFunctionRetrieveARequest: "false"
+        SlimFaas/TimeoutSecondBeforeSetReplicasMin: "1200"
+        SlimFaas/NumberParallelRequest: "10"
+    spec:
+      volumes:
+      - name: storage
+        emptyDir:
+          medium: Memory
+          sizeLimit: 6Gi
+      initContainers:
+      - image: ollama/ollama:latest
+        name: pull-model
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        command:
+        - /bin/sh
+        - -c 
+        - ollama serve > /dev/null 2>&1 & sleep 10 && ollama pull tinyllama
+        volumeMounts:
+        - mountPath: "/root/.ollama"
+          name: storage
+      containers:
+      - image: ollama/ollama:latest
+        name: ollama
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+        livenessProbe:
+          httpGet:
+            path: /
+            port: 11434
+          initialDelaySeconds: 15
+          periodSeconds: 8
+          timeoutSeconds: 8
+        ports:
+        - containerPort: 11434
+          name: ollama
+          protocol: TCP
+        volumeMounts:
+        - mountPath: "/root/.ollama"
+          name: storage
+      tolerations:
+      - key: "k8s.scaleway.com/node"
+        operator: "Equal"
+        value: "gpu"
+        effect: "NoSchedule"
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    app: ollama
+  name: ollama
+  namespace: slimfaas-demo
+spec:
+  ports:
+  - name: ollama
+    port: 5000
+    protocol: TCP
+    targetPort: 11434
+  selector:
+    app: ollama
+  type: ClusterIP
